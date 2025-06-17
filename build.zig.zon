@@ -1,0 +1,16 @@
+.{
+    .name = .conduit,
+    .fingerprint = 0xfdbb52815746bebb,
+    .version = "0.0.1",
+    .dependencies = .{
+        .temp = .{
+            .url = "git+https://github.com/abhinav/temp.zig.git#382a711f253d54a88f222650e6c03b62411373c6",
+            .hash = "temp-0.3.0-Ogl1FSSBAAB2WXv3QbTYO3NYfVFoYTBkZsVK3MYvbxFE",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
