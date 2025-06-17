@@ -32,4 +32,13 @@ pub fn build(b: *std.Build) void {
     });
     const mod_temp = lib_temp.module("temp");
     conduit_mod.addImport("temp", mod_temp);
+
+    const install_docs = b.addInstallDirectory(.{
+        .source_dir = conduit_lib.getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "docs",
+    });
+
+    const docs_step = b.step("docs", "Generate documentation");
+    docs_step.dependOn(&install_docs.step);
 }
