@@ -1,3 +1,17 @@
+//! Object provides efficient data streaming with automatic storage management.
+//!
+//! This module implements a flexible data container that automatically switches
+//! between in-memory and file system storage based on size constraints. It's
+//! designed for scenarios where you need to handle data of varying sizes without
+//! knowing the final size upfront.
+//!
+//! Key features:
+//! - Automatic transition from memory to temporary files when size limits are exceeded
+//! - Standard reader/writer interfaces compatible with Zig's I/O system
+//! - Built-in MD5 hash computation during data operations
+//! - Configurable memory limits and dynamic growth
+//! - Efficient handling of both small and large data sets
+
 const std = @import("std");
 const Md5 = std.crypto.hash.Md5;
 const TempFile = @import("temp").TempFile;
@@ -53,6 +67,20 @@ pub const ObjectOptions = struct {
     in_memory_limit: usize = DEFAULT_IN_MEMORY_LIMIT,
 };
 
+/// Creates a new Object with the specified options.
+///
+/// The Object will start in memory mode if the initial capacity is within the memory limit,
+/// otherwise it will start in file system mode using a temporary file.
+///
+/// Args:
+///   - allocator: The allocator to use for memory management
+///   - options: Configuration options for the Object
+///
+/// Returns:
+///   A new Object instance
+///
+/// Errors:
+///   Returns an error if memory allocation fails or temporary file creation fails
 pub fn init(allocator: Allocator, options: ObjectOptions) !Object {
     const in_memory_limit = options.in_memory_limit;
     const mode: Mode = if (options.initial_capacity <= in_memory_limit) .inMemory else .fileSystem;
@@ -72,6 +100,20 @@ pub fn init(allocator: Allocator, options: ObjectOptions) !Object {
     };
 }
 
+/// Creates a new Object initialized with data from the provided buffer.
+///
+/// The buffer contents are copied into the Object's internal storage. The Object
+/// will always start in memory mode regardless of buffer size.
+///
+/// Args:
+///   - allocator: The allocator to use for memory management
+///   - buffer: The initial data to copy into the Object
+///
+/// Returns:
+///   A new Object instance containing a copy of the buffer data
+///
+/// Errors:
+///   Returns an error if memory allocation fails
 pub fn initBuffer(allocator: Allocator, buffer: []const u8) !Object {
     const in_memory_store = try createInMemoryStore(allocator, buffer.len);
     try in_memory_store.data.appendSlice(allocator, buffer);
@@ -86,6 +128,10 @@ pub fn initBuffer(allocator: Allocator, buffer: []const u8) !Object {
     };
 }
 
+/// Cleans up all resources used by the Object.
+///
+/// This method must be called to properly free memory and close any temporary files.
+/// After calling deinit, the Object should not be used again.
 pub fn deinit(self: *Object) void {
     switch (self.mode) {
         .inMemory => {
@@ -234,6 +280,16 @@ fn resetStream(self: *Object) !void {
     }
 }
 
+/// Returns a reader interface for reading data from the Object.
+///
+/// The reader will start from the beginning of the data. Each call to reader()
+/// resets the read position to the start and reinitializes the MD5 hash state.
+///
+/// Returns:
+///   An AnyReader that can be used to read data from the Object
+///
+/// Errors:
+///   Returns an error if the stream cannot be reset (e.g., file seek fails)
 pub fn reader(self: *Object) !AnyReader {
     try self.resetStream();
 
@@ -243,6 +299,16 @@ pub fn reader(self: *Object) !AnyReader {
     };
 }
 
+/// Returns a writer interface for writing data to the Object.
+///
+/// The writer will start from the beginning, overwriting any existing data.
+/// Each call to writer() resets the write position to the start and reinitializes the MD5 hash state.
+///
+/// Returns:
+///   An AnyWriter that can be used to write data to the Object
+///
+/// Errors:
+///   Returns an error if the stream cannot be reset (e.g., file seek fails)
 pub fn writer(self: *Object) !AnyWriter {
     try self.resetStream();
 
@@ -252,6 +318,19 @@ pub fn writer(self: *Object) !AnyWriter {
     };
 }
 
+/// Returns all data in the Object as an owned slice.
+///
+/// This method allocates a new buffer and copies all data from the Object into it.
+/// The caller is responsible for freeing the returned slice.
+///
+/// Args:
+///   - allocator: The allocator to use for the returned slice
+///
+/// Returns:
+///   An owned slice containing a copy of all data in the Object
+///
+/// Errors:
+///   Returns an error if memory allocation fails or reading fails
 pub fn toOwnedSlice(self: *Object, allocator: Allocator) ![]const u8 {
     var rdr = try self.reader();
     const buffer = try allocator.alloc(u8, self.len);
@@ -259,18 +338,30 @@ pub fn toOwnedSlice(self: *Object, allocator: Allocator) ![]const u8 {
     return buffer;
 }
 
-pub fn grow(self: *Object, min_new_size: usize) !void {
+/// Grows the Object's capacity to accommodate at least the specified size.
+///
+/// If the Object is in memory mode and the new size exceeds the memory limit,
+/// it will automatically transition to file system mode by copying existing
+/// data to a temporary file. If already in file system mode, this method
+/// logs a warning and returns without action.
+///
+/// Args:
+///   - new_min_size: The minimum capacity required
+///
+/// Errors:
+///   Returns an error if memory allocation or file operations fail
+pub fn grow(self: *Object, new_min_size: usize) !void {
     if (self.mode == .fileSystem) {
         logger.warn("Can't grow Object in fileSystem mode.", .{});
         return;
     }
 
-    std.debug.assert(min_new_size > self.capacity);
+    std.debug.assert(new_min_size > self.capacity);
 
     var in_memory_store = self.getInMemoryStore();
     const current_pos = in_memory_store.pos;
 
-    if (min_new_size > self.in_memory_limit) {
+    if (new_min_size > self.in_memory_limit) {
         var fs = try createFileSystem(self.allocator);
         fs.file = try fs.temp_file.open(.{ .mode = .read_write });
 
@@ -287,7 +378,7 @@ pub fn grow(self: *Object, min_new_size: usize) !void {
     }
 
     self.capacity = @min(
-        try std.math.ceilPowerOfTwo(usize, min_new_size),
+        try std.math.ceilPowerOfTwo(usize, new_min_size),
         self.in_memory_limit,
     );
 
@@ -295,6 +386,20 @@ pub fn grow(self: *Object, min_new_size: usize) !void {
     in_memory_store.pos = current_pos;
 }
 
+/// Returns the MD5 hash of all data that has been read from or written to the Object.
+///
+/// The hash is computed incrementally as data flows through the Object's reader/writer
+/// interfaces. This method allocates a new buffer for the hash bytes.
+/// The caller is responsible for freeing the returned slice.
+///
+/// Args:
+///   - allocator: The allocator to use for the returned hash buffer
+///
+/// Returns:
+///   An owned slice containing the 16-byte MD5 hash
+///
+/// Errors:
+///   Returns an error if memory allocation fails
 pub fn md5HashOwned(self: Object, allocator: Allocator) ![]const u8 {
     const buffer = try allocator.alloc(u8, Md5.digest_length);
 

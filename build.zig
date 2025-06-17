@@ -15,7 +15,7 @@ pub fn build(b: *std.Build) void {
         .root_module = conduit_mod,
     });
 
-    b.installArtifact(conduit_lib);
+    const install = b.addInstallArtifact(conduit_lib, .{});
 
     const lib_unit_tests = b.addTest(.{
         .root_module = conduit_mod,
@@ -41,4 +41,5 @@ pub fn build(b: *std.Build) void {
 
     const docs_step = b.step("docs", "Generate documentation");
     docs_step.dependOn(&install_docs.step);
+    install.step.dependOn(docs_step);
 }
